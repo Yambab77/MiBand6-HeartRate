@@ -25,6 +25,7 @@
 #include "bandfunctions.h"
 #include "band_filter.h"
 #include "band_menu.h"
+#include "hr_upload.h"
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -401,6 +402,7 @@ void StartFilteredBroadcastWatcher() {
         }
 
         g_heartRate = hrCandidate;
+        UploadHeartRateToServer(hrCandidate);
         UpdateHrHistory(hrCandidate);
 
         AppendLog(L"[ADV-HR] addr=" + FormatBtAddr(args.BluetoothAddress()) +

@@ -36,6 +36,9 @@
     <ClInclude Include="band_menu.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="hr_upload.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="band.cpp">
@@ -48,6 +51,9 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="band_menu.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="hr_upload.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
