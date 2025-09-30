@@ -1,1 +1,2 @@
-# MiBand6-HeartRate-C++
+# MiBand6-HeartRate
+使用C++开发，通过启用小米手环6自带的运动心率广播功能，在Windows主机上接收其蓝牙广播数据，并将实时心率数据显示在屏幕上。

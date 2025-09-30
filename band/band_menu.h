@@ -44,3 +44,7 @@ bool HandleMenuDraw(LPDRAWITEMSTRUCT dis);
 
 // WM_COMMAND 分发（返回 true 表示已处理）
 bool HandleMenuCommand(HWND owner, WORD id);
+
+// 自定义无边框菜单（内部使用）
+void ShowCustomContextMenu(HWND owner, POINT screenPt);
+

@@ -5,6 +5,12 @@
 #include <cwctype>
 #include <chrono>
 #include <atomic>
+#include <windowsx.h> // 提供 GET_X_LPARAM / GET_Y_LPARAM（若已包含可忽略）
+
+#ifndef GET_Y_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
 
 using namespace Gdiplus;
 
@@ -156,17 +162,7 @@ void InitMenuSubsystem() {
 }
 
 void ShowContextMenu(HWND owner, POINT screenPt) {
-    HMENU hMenu = CreatePopupMenu();
-    AddFilterMenuItem(hMenu); // 过滤菜单
-    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_OWNERDRAW, ID_POP_CHANGE_COLOR, L"变更心跳颜色");
-    // 去掉所有系统分隔符，保证纯色连续
-    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_OWNERDRAW, ID_POP_EXIT, L"退出");
-    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_OWNERDRAW, ID_POP_TOGGLE_TOP, L"切换置顶");
-
-    SetForegroundWindow(owner);
-    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN,
-                   screenPt.x, screenPt.y, 0, owner, nullptr);
-    DestroyMenu(hMenu);
+    ShowCustomContextMenu(owner, screenPt);
 }
 
 bool HandleMenuMeasure(LPMEASUREITEMSTRUCT mis) {
@@ -223,4 +219,161 @@ bool HandleMenuCommand(HWND owner, WORD id) {
         break;
     }
     return false;
+}
+
+// ================= 自定义无边框菜单实现 =================
+struct MenuItemDef {
+    UINT id;
+    std::wstring text;
+};
+
+static const int kMenuItemHeight = 34;
+static const int kMenuWidth      = 200;
+static const int kMenuPadX       = 12;
+static const wchar_t* kMenuWndClass = L"HrCtxMenuWnd";
+
+static std::vector<MenuItemDef> BuildMenuItems() {
+    std::vector<MenuItemDef> v;
+    v.push_back({ ID_POP_SET_FILTER,  g_filterAddr.load() ? L"设置过滤地址(已启用)" : L"设置过滤地址" });
+    v.push_back({ ID_POP_CHANGE_COLOR, L"变更心跳颜色" });
+    v.push_back({ ID_POP_TOGGLE_TOP,   g_alwaysOnTop ? L"取消置顶" : L"设为置顶" });
+    v.push_back({ ID_POP_EXIT,         L"退出程序" });
+    return v;
+}
+
+static LRESULT CALLBACK MenuWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* items = reinterpret_cast<std::vector<MenuItemDef>*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    static int hotIndex = -1;
+    switch (msg) {
+    case WM_NCCALCSIZE:
+        return 0; // 无边框区域
+    case WM_CREATE: {
+        CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        SetCapture(hWnd); // 捕获鼠标用于外部点击关闭
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        if (!items) break;
+        int y = GET_Y_LPARAM(lParam);
+        int idx = y / kMenuItemHeight;
+        if (idx < 0 || idx >= (int)items->size()) idx = -1;
+        if (idx != hotIndex) {
+            hotIndex = idx;
+            InvalidateRect(hWnd, nullptr, FALSE);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        if (!items) { DestroyWindow(hWnd); return 0; }
+        int y = GET_Y_LPARAM(lParam);
+        int idx = y / kMenuItemHeight;
+        if (idx >= 0 && idx < (int)items->size()) {
+            UINT id = (*items)[idx].id;
+            HWND owner = GetParent(hWnd);
+            DestroyWindow(hWnd);
+            if (owner) HandleMenuCommand(owner, (WORD)id);
+        } else {
+            DestroyWindow(hWnd);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN: {
+        if (wParam == VK_ESCAPE) {
+            DestroyWindow(hWnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_CAPTURECHANGED: {
+        // 如果捕获转移到外部 -> 关闭
+        if ((HWND)lParam != hWnd) {
+            DestroyWindow(hWnd);
+        }
+        return 0;
+    }
+    case WM_KILLFOCUS:
+        DestroyWindow(hWnd); return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        Graphics g(hdc);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        RECT rc; GetClientRect(hWnd, &rc);
+        // 背景纯色
+        SolidBrush bg(Color(230, 40, 40, 40));
+        g.FillRectangle(&bg,
+                        (INT)rc.left,
+                        (INT)rc.top,
+                        (INT)(rc.right - rc.left),
+                        (INT)(rc.bottom - rc.top));
+
+        if (items) {
+            FontFamily ff(L"微软雅黑");
+            Font ft(&ff, 14.f, FontStyleBold, UnitPixel);
+            SolidBrush txt(Color(255, 255, 255, 255));
+            for (size_t i = 0; i < items->size(); ++i) {
+                int top = (int)i * kMenuItemHeight;
+                bool hot = ((int)i == hotIndex);
+                if (hot) {
+                    SolidBrush hb(Color(255, 180, 70, 90));
+                    g.FillRectangle(&hb, (INT)0, (INT)top, (INT)kMenuWidth, (INT)kMenuItemHeight);
+                } else {
+                    SolidBrush nb(Color(255, 70, 70, 95));
+                    g.FillRectangle(&nb, (INT)0, (INT)top, (INT)kMenuWidth, (INT)kMenuItemHeight);
+                }
+                RectF tr((REAL)kMenuPadX, (REAL)top, (REAL)(kMenuWidth - kMenuPadX * 2), (REAL)kMenuItemHeight);
+                StringFormat sf;
+                sf.SetAlignment(StringAlignmentNear);
+                sf.SetLineAlignment(StringAlignmentCenter);
+                g.DrawString((*items)[i].text.c_str(), -1, &ft, tr, &sf, &txt);
+            }
+        }
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        if (items) {
+            delete items;
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+        }
+        ReleaseCapture();
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static void EnsureMenuClass() {
+    static bool reg = false;
+    if (reg) return;
+    WNDCLASSEXW wc{ sizeof(WNDCLASSEXW) };
+    wc.lpfnWndProc = MenuWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kMenuWndClass;
+    wc.hbrBackground = nullptr;
+    wc.style = CS_DROPSHADOW; // 可去掉阴影：若也不想阴影可注释
+    RegisterClassExW(&wc);
+    reg = true;
+}
+
+void ShowCustomContextMenu(HWND owner, POINT screenPt) {
+    EnsureMenuClass();
+    auto* items = new std::vector<MenuItemDef>(BuildMenuItems());
+    int h = (int)items->size() * kMenuItemHeight;
+    // 创建无边框窗口
+    HWND wnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kMenuWndClass, L"",
+        WS_POPUP,
+        screenPt.x, screenPt.y, kMenuWidth, h,
+        owner, nullptr, GetModuleHandleW(nullptr), items);
+    if (!wnd) {
+        delete items;
+        return;
+    }
+    ShowWindow(wnd, SW_SHOWNOACTIVATE);
+    UpdateWindow(wnd);
 }
