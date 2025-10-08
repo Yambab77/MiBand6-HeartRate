@@ -7,7 +7,7 @@
 需要在网站添加如下代码
 步骤一：前端 AJAX 轮询
 在首页页脚或自定义 JS 里加如下代码（每秒刷新一次）：
-//
+//更新对于主题的页眉或页脚文件
 <script>
 function updateHR() {
     fetch('https://www.woyoudu.cn/wp-json/hr/v1/current/')
@@ -25,7 +25,7 @@ window.onload = updateHR;
 步骤二：检查 REST API 注册代码
 请确保你在主题的 functions.php 或自定义插件中完整添加了如下代码：
 
-//
+//更新对于主题的functions.php文件
 add_action('rest_api_init', function () {
 <script>
 const FALLBACK_TEXT = "未获取到数据";
@@ -50,10 +50,8 @@ function updateHR() {
 setInterval(updateHR, 2000);
 window.addEventListener('load', updateHR);
 </script>
-
 <span>当前心率：<span id="hr-value">--</span></span>
-
-    // 获取当前心率：返回 hr、时间戳、是否过期
+// 获取当前心率：返回 hr、时间戳、是否过期
     register_rest_route('hr/v1', '/current/', array(
         'methods'  => 'GET',
         'callback' => function () {
