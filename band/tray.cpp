@@ -1,7 +1,11 @@
 #include "tray.h"
+#include <windows.h>   // 确保 GDI 函数声明（CreateRoundRectRgn 等）
 #include <shellapi.h>
 #include <gdiplus.h>
 #include <algorithm>
+#include <vector>
+#include <atomic>
+#include <windowsx.h>
 
 #pragma comment(lib, "Shell32.lib")
 
@@ -11,6 +15,15 @@ static bool  s_trayActive = false;
 static HICON s_trayIcon = nullptr;
 static HWND  s_hwndMain = nullptr;
 static bool  s_menuShowing = false; // 防止重复弹出多个菜单实例
+static std::atomic<UINT> s_trayMenuCmd{ 0 }; // 菜单选择结果（0 表示取消）
+
+// 若常量在此前版本丢失，这里统一定义一次
+#ifndef TRAY_MENU_CONSTANTS_DEFINED
+#define TRAY_MENU_CONSTANTS_DEFINED 1
+static constexpr int kTrayItemHeight = 30;
+static constexpr int kTrayWidth      = 120;
+static constexpr int kTrayRadius     = 8;
+#endif
 
 static HICON CreateHrTrayIcon(int hr) {
     const int cx = GetSystemMetrics(SM_CXSMICON);
@@ -147,13 +160,54 @@ static void ForceForeground(HWND target) {
     if (fgTid && fgTid != selfTid) AttachThreadInput(fgTid, selfTid, FALSE);
 }
 
-// 创建一个临时菜单宿主窗口（可见但 1x1，无边框），用于可靠显示右键菜单
+// 托盘菜单宿主窗口过程：处理 Owner-Draw
+static LRESULT CALLBACK TrayMenuHostProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_MEASUREITEM: {
+        auto* mis = reinterpret_cast<LPMEASUREITEMSTRUCT>(lParam);
+        if (mis && mis->CtlType == ODT_MENU) {
+            mis->itemHeight = 30;   // 固定高度
+            mis->itemWidth  = 90;  // 固定宽度（仅用于系统估算）
+            return TRUE;
+        }
+        break;
+    }
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<LPDRAWITEMSTRUCT>(lParam);
+        if (dis && dis->CtlType == ODT_MENU) {
+            RECT rc = dis->rcItem;
+            // 背景：黑色，选中时深灰
+            COLORREF bg = (dis->itemState & ODS_SELECTED) ? RGB(24,24,24) : RGB(0,0,0);
+            HBRUSH hbr = CreateSolidBrush(bg);
+            FillRect(dis->hDC, &rc, hbr);
+            DeleteObject(hbr);
+
+            // 文本：白色
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, RGB(255,255,255));
+
+            // 根据 itemID 决定文本
+            const wchar_t* text = L"";
+            if (dis->itemID == ID_TRAY_RESTORE) text = L"还原窗口";
+            else if (dis->itemID == ID_TRAY_EXIT) text = L"退出程序";
+
+            RECT trc = rc; trc.left += 10; // 左侧内边距
+            DrawTextW(dis->hDC, text, -1, &trc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            return TRUE;
+        }
+        break;
+    }
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// 创建一个临时菜单宿主窗口（可见但 1x1，无边框），用于可靠显示右键菜单（旧 HMENU 方案保留但不再使用）
 static HWND CreateTrayMenuHost(HWND owner) {
     static const wchar_t* kClass = L"TrayMenuHostWnd";
     static bool s_reg = false;
     if (!s_reg) {
         WNDCLASSEXW wc{ sizeof(WNDCLASSEXW) };
-        wc.lpfnWndProc = DefWindowProcW;
+        wc.lpfnWndProc = TrayMenuHostProc; // 使用自定义过程以处理 Owner-Draw
         wc.hInstance   = GetModuleHandleW(nullptr);
         wc.hCursor     = LoadCursor(nullptr, IDC_ARROW);
         wc.lpszClassName = kClass;
@@ -174,31 +228,141 @@ static HWND CreateTrayMenuHost(HWND owner) {
     return host;
 }
 
-static UINT ShowTrayMenu() {
-    HMENU h = CreatePopupMenu();
-    InsertMenuW(h, -1, MF_BYPOSITION | MF_STRING, ID_TRAY_RESTORE, L"还原窗口");
-    InsertMenuW(h, -1, MF_BYPOSITION | MF_STRING, ID_TRAY_EXIT,    L"退出程序");
+// ===== 自绘圆角黑底托盘菜单 =====
+struct TrayMenuItem { UINT id; const wchar_t* text; };
+static const wchar_t* kTrayMenuClass = L"TrayCtxMenuWnd";
 
-    // 菜单位置：鼠标当前位置
-    POINT pt{}; GetCursorPos(&pt);
-    // 使用临时菜单宿主，确保前台与消息队列正确
-    HWND host = CreateTrayMenuHost(s_hwndMain);
-    // 再次确保前台
-    if (host) ForceForeground(host);
-
-    UINT cmd = TrackPopupMenu(h,
-                              TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
-                              pt.x, pt.y, 0, host ? host : s_hwndMain, nullptr);
-    DestroyMenu(h);
-
-    // 让菜单正确关闭（MS 推荐）：向宿主发送一个空消息
-    if (host) {
-        PostMessageW(host, WM_NULL, 0, 0);
-        DestroyWindow(host);
-    } else if (s_hwndMain) {
-        PostMessageW(s_hwndMain, WM_NULL, 0, 0);
+static LRESULT CALLBACK TrayCtxMenuProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* items = reinterpret_cast<std::vector<TrayMenuItem>*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    static int hot = -1;
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        s_trayMenuCmd.store(0, std::memory_order_relaxed);
+        // 圆角区域（确保 6 个 int 参数）
+        RECT rc{}; GetClientRect(hWnd, &rc);
+        HRGN rgn = CreateRoundRectRgn(
+            (int)rc.left, (int)rc.top, (int)rc.right, (int)rc.bottom,
+            (int)(kTrayRadius * 2), (int)(kTrayRadius * 2));
+        SetWindowRgn(hWnd, rgn, FALSE); // rgn 由窗口接管
+        SetCapture(hWnd);
+        return 0;
     }
-    return cmd;
+    case WM_MOUSEMOVE: {
+        POINTS pts = MAKEPOINTS(lParam);
+        int idx = pts.y / kTrayItemHeight;
+        if (!items || idx < 0 || idx >= (int)items->size()) idx = -1;
+        if (idx != hot) { hot = idx; InvalidateRect(hWnd, nullptr, FALSE); }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        if (!items) { DestroyWindow(hWnd); return 0; }
+        int idx = HIWORD(lParam) / kTrayItemHeight;
+        UINT ret = 0;
+        if (idx >= 0 && idx < (int)items->size()) ret = (*items)[idx].id;
+        ReleaseCapture();
+        // 通过原子变量回传选择结果
+        s_trayMenuCmd.store(ret, std::memory_order_relaxed);
+        DestroyWindow(hWnd);
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) { ReleaseCapture(); s_trayMenuCmd.store(0, std::memory_order_relaxed); DestroyWindow(hWnd); return 0; }
+        break;
+    case WM_KILLFOCUS:
+    case WM_CAPTURECHANGED:
+        ReleaseCapture(); s_trayMenuCmd.store(0, std::memory_order_relaxed); DestroyWindow(hWnd); return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC hdc = BeginPaint(hWnd, &ps);
+        Graphics g(hdc);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        RECT rc{}; GetClientRect(hWnd, &rc);
+        // 背景：纯黑圆角
+        {
+            GraphicsPath path;
+            RectF rcf((REAL)rc.left, (REAL)rc.top, (REAL)(rc.right - rc.left), (REAL)(rc.bottom - rc.top));
+            REAL r = (REAL)kTrayRadius;
+            path.AddArc(rcf.X, rcf.Y, r*2, r*2, 180, 90);
+            path.AddArc(rcf.GetRight()-r*2, rcf.Y, r*2, r*2, 270, 90);
+            path.AddArc(rcf.GetRight()-r*2, rcf.GetBottom()-r*2, r*2, r*2,   0, 90);
+            path.AddArc(rcf.X, rcf.GetBottom()-r*2, r*2, r*2,  90, 90);
+            path.CloseFigure();
+            SolidBrush bg(Color(255, 0, 0, 0));
+            g.FillPath(&bg, &path);
+        }
+        if (items) {
+            FontFamily ff(L"微软雅黑");
+            Font ft(&ff, 14.f, FontStyleBold, UnitPixel);
+            SolidBrush white(Color(255, 255, 255, 255));
+            for (size_t i = 0; i < items->size(); ++i) {
+                int top = (int)i * kTrayItemHeight;
+                if ((int)i == hot) {
+                    SolidBrush sel(Color(255, 24, 24, 24));
+                    g.FillRectangle(&sel, 0, top, kTrayWidth, kTrayItemHeight);
+                }
+                RectF trc(0, (REAL)top, (REAL)kTrayWidth, (REAL)kTrayItemHeight);
+                StringFormat sf; sf.SetAlignment(StringAlignmentCenter); sf.SetLineAlignment(StringAlignmentCenter);
+                g.DrawString((*items)[i].text, -1, &ft, trc, &sf, &white);
+            }
+        }
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        if (items) { delete items; SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0); }
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static void EnsureTrayMenuClass() {
+    static bool reg = false;
+    if (reg) return;
+    WNDCLASSEXW wc{ sizeof(WNDCLASSEXW) };
+    wc.lpfnWndProc = TrayCtxMenuProc;
+    wc.hInstance   = GetModuleHandleW(nullptr);
+    wc.hCursor     = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kTrayMenuClass;
+    wc.hbrBackground = nullptr;
+    RegisterClassExW(&wc);
+    reg = true;
+}
+
+// 同步显示自绘托盘菜单，返回选择的命令 ID（0 表示取消）
+static UINT ShowTrayMenu() {
+    EnsureTrayMenuClass();
+    auto* items = new std::vector<TrayMenuItem>{
+        { ID_TRAY_RESTORE, L"还原窗口" },
+        { ID_TRAY_EXIT,    L"退出程序" }
+    };
+    POINT pt{}; GetCursorPos(&pt);
+    int w = kTrayWidth;
+    int h = (int)items->size() * kTrayItemHeight;
+    // 屏幕边缘修正
+    RECT sr{ 0,0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    int x = pt.x, y = pt.y;
+    if (x + w > sr.right)  x = sr.right - w - 2;
+    if (y + h > sr.bottom) y = sr.bottom - h - 2;
+    HWND wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                               kTrayMenuClass, L"", WS_POPUP,
+                               x, y, w, h,
+                               s_hwndMain, nullptr, GetModuleHandleW(nullptr), items);
+    if (!wnd) { delete items; return 0; }
+    ShowWindow(wnd, SW_SHOWNOACTIVATE);
+    UpdateWindow(wnd);
+    ForceForeground(wnd);
+    // 阻塞消息循环直到窗口销毁
+    UINT ret = 0;
+    MSG msg;
+    while (IsWindow(wnd) && GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    // 从原子变量取回命令
+    ret = s_trayMenuCmd.exchange(0, std::memory_order_relaxed);
+    return ret;
 }
 
 bool Tray_HandleMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
