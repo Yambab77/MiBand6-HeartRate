@@ -18,6 +18,9 @@
 #ifndef ID_POP_SET_FILTER
 #define ID_POP_SET_FILTER    9004
 #endif
+#ifndef ID_POP_MINIMIZE
+#define ID_POP_MINIMIZE      9005
+#endif
 
 // ----- 外部依赖（在 band.cpp / 其它模块中定义）-----
 extern bool  g_alwaysOnTop;
@@ -28,7 +31,6 @@ extern BYTE  g_glowColorB;
 extern bool  g_userColorOverride;
 extern const UINT WM_APP_REFRESH;
 
-// 来自 band_filter (已在 band_filter.h 中) 的接口我们只在实现里包含其头即可
 void AppendLog(const std::wstring& line);
 
 // ----- 菜单接口 -----
@@ -45,6 +47,8 @@ bool HandleMenuDraw(LPDRAWITEMSTRUCT dis);
 // WM_COMMAND 分发（返回 true 表示已处理）
 bool HandleMenuCommand(HWND owner, WORD id);
 
+// 托盘最小化（由主程序提供）
+void MinimizeToTray();
+
 // 自定义无边框菜单（内部使用）
 void ShowCustomContextMenu(HWND owner, POINT screenPt);
-

@@ -203,6 +203,9 @@ bool HandleMenuCommand(HWND owner, WORD id) {
     case ID_POP_CHANGE_COLOR:
         ShowColorInputDialog(owner);
         return true;
+    case ID_POP_MINIMIZE:
+        MinimizeToTray();
+        return true;
     case ID_POP_EXIT:
         AppendLog(L"[UI] 菜单退出");
         PostMessageW(owner, WM_CLOSE, 0, 0);
@@ -236,6 +239,7 @@ static std::vector<MenuItemDef> BuildMenuItems() {
     std::vector<MenuItemDef> v;
     v.push_back({ ID_POP_SET_FILTER,  g_filterAddr.load() ? L"设置过滤地址(已启用)" : L"设置过滤地址" });
     v.push_back({ ID_POP_CHANGE_COLOR, L"变更心跳颜色" });
+    v.push_back({ ID_POP_MINIMIZE,     L"最小化到托盘" });
     v.push_back({ ID_POP_TOGGLE_TOP,   g_alwaysOnTop ? L"取消置顶" : L"设为置顶" });
     v.push_back({ ID_POP_EXIT,         L"退出程序" });
     return v;

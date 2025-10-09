@@ -136,6 +136,7 @@
     <ClInclude Include="hr_upload.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="tray.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="band.cpp" />
@@ -143,6 +144,7 @@
     <ClCompile Include="band_filter.cpp" />
     <ClCompile Include="band_menu.cpp" />
     <ClCompile Include="hr_upload.cpp" />
+    <ClCompile Include="tray.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="band.rc" />

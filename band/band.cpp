@@ -26,6 +26,7 @@
 #include "band_filter.h"
 #include "band_menu.h"
 #include "hr_upload.h"
+#include "tray.h"
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -650,7 +651,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP_REFRESH:
     case WM_TIMER:
         if (msg == WM_TIMER) StepGlow100ms();
-        UpdateOverlay(hWnd); return 0;
+        UpdateOverlay(hWnd);
+        Tray_OnUiTick();
+        return 0;
+    case WM_APP_TRAY:
+        if (Tray_HandleMessage(hWnd, msg, wParam, lParam)) return 0;
+        break;
     case WM_CREATE:
         // 100ms 刷新（衰减步长）
         SetTimer(hWnd, 1, 100, nullptr); return 0;
@@ -707,6 +713,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     }
     case WM_DESTROY:
+        Tray_Shutdown();
         g_logRunning = false; FlushLogToFile(); PostQuitMessage(0); return 0;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -772,6 +779,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         return 0;
     }
     g_mainWnd = hWnd;
+    Tray_Init(hWnd);
 
     // 初次合成
     InitFilter();
