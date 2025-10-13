@@ -49,8 +49,9 @@ using namespace Gdiplus;
 bool g_alwaysOnTop = true; // 供 band_menu 使用
 
 HWND g_mainWnd = nullptr;
-std::atomic<int> g_heartRate(75);
-std::atomic<bool> g_simpleMode{ false }; // 新增：简洁模式
+std::atomic<int> g_heartRate(60);
+// 将默认显示方式设为“简洁模式”
+std::atomic<bool> g_simpleMode{ true }; // 新增：简洁模式
 
 static std::unique_ptr<Gdiplus::Image> g_bgImage;
 static int g_winW = 400;
@@ -60,8 +61,8 @@ const UINT WM_APP_REFRESH = WM_APP + 1;
 
 std::mutex g_hrHistMutex;
 std::deque<std::pair<std::chrono::steady_clock::time_point, int>> g_hrHistory;
-std::atomic<int> g_hr5MinHi(75);
-std::atomic<int> g_hr5MinLo(75);
+std::atomic<int> g_hr5MinHi(60);
+std::atomic<int> g_hr5MinLo(60);
 
 static std::mutex g_logMutex;
 static std::vector<std::string> g_logBuffer;
