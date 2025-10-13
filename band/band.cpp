@@ -50,6 +50,7 @@ bool g_alwaysOnTop = true; // 供 band_menu 使用
 
 HWND g_mainWnd = nullptr;
 std::atomic<int> g_heartRate(75);
+std::atomic<bool> g_simpleMode{ false }; // 新增：简洁模式
 
 static std::unique_ptr<Gdiplus::Image> g_bgImage;
 static int g_winW = 400;
@@ -428,7 +429,10 @@ void DrawFancyText(HDC hdc, int hr) {
     Graphics g(hdc);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-    if (g_bgImage && g_bgImage->GetLastStatus() == Ok) {
+
+    bool simple = g_simpleMode.load();
+
+    if (!simple && g_bgImage && g_bgImage->GetLastStatus() == Ok) {
         ImageAttributes attrs;
         attrs.SetWrapMode(WrapModeTileFlipXY);
         g.DrawImage(
@@ -438,7 +442,7 @@ void DrawFancyText(HDC hdc, int hr) {
             UnitPixel,
             &attrs);
     }
-    else {
+    else if (!simple) {
         SolidBrush bg(Color(255, 32, 32, 32));
         g.FillRectangle(&bg, 0, 0, g_winW, g_winH);
     }
@@ -448,7 +452,16 @@ void DrawFancyText(HDC hdc, int hr) {
     Font font(&ff, fontSize, FontStyleBold, UnitPixel);
     RectF layout;
     g.MeasureString(txt.c_str(), -1, &font, PointF(0, 0), &layout);
-    PointF origin(22.0f, (REAL)g_winH - layout.Height - g_hrBottomMargin);
+
+    // 简洁模式：数字与光斑均居中；否则沿原来的左下布局
+    PointF origin;
+    if (simple) {
+        REAL cx = (REAL)g_winW * 0.5f;
+        REAL cy = (REAL)g_winH * 0.5f;
+        origin = PointF(cx - layout.Width * 0.5f, cy - layout.Height * 0.5f);
+    } else {
+        origin = PointF(22.0f, (REAL)g_winH - layout.Height - g_hrBottomMargin);
+    }
 
     // ==== 心形光斑（在数字上方）====
     if (hr > 0) {
@@ -462,18 +475,19 @@ void DrawFancyText(HDC hdc, int hr) {
             if (boosted > 255) boosted = 255;
             BYTE a = (BYTE)boosted;
             // 心形中心位置：数字中心上方 offset
-            // 左移 5 像素
-            REAL cx;
-            REAL cy;
-            if (g_glowFixedPos) {
+            REAL cx, cy;
+            if (simple) {
+                // 简洁模式：与文字中心一致
+                cx = (REAL)g_winW * 0.5f;
+                cy = (REAL)g_winH * 0.5f;
+            } else if (g_glowFixedPos) {
                 cx = (REAL)(g_winW * g_glowFixedXRatio);
                 cy = (REAL)(g_winH * g_glowFixedYRatio);
             } else {
-                // 原随文本居中逻辑（保留以便需要时切换回）
                 cx = origin.X + layout.Width * 0.5f - 3.0f;
                 cy = origin.Y - fontSize * 0.35f;
             }
-            REAL s = fontSize * 2.0f;             // 尺寸系数 (原 1.08 * 2)
+            REAL s = fontSize * (simple ? 1.8f : 2.0f); // 简洁模式略小一点以更协调
 
             GraphicsPath heart;
             // 使用两段 Bezier 构造对称心形
@@ -534,19 +548,25 @@ void DrawFancyText(HDC hdc, int hr) {
 
     SolidBrush shadow(Color(160, 0, 0, 0));
     SolidBrush white(Color(255, 255, 255, 255));
-    g.DrawString(txt.c_str(), -1, &font, PointF(origin.X + 2, origin.Y + 2), &shadow);
-    g.DrawString(txt.c_str(), -1, &font, origin, &white);
+    if (simple) {
+        // 居中绘制：用测量结果定位，保留阴影
+        g.DrawString(txt.c_str(), -1, &font, PointF(origin.X + 2, origin.Y + 2), &shadow);
+        g.DrawString(txt.c_str(), -1, &font, origin, &white);
+    } else {
+        g.DrawString(txt.c_str(), -1, &font, PointF(origin.X + 2, origin.Y + 2), &shadow);
+        g.DrawString(txt.c_str(), -1, &font, origin, &white);
+    }
 
     // 显示 5 分钟 hi/lo（支持固定位置）
-    {
-        int hi = g_hr5MinHi.load();
-        int lo = g_hr5MinLo.load();
-        Font miniFont(&ff, fontSize * 0.5f, FontStyleBold, UnitPixel);
-        std::wstring shi = std::to_wstring(hi);
-        std::wstring slo = std::to_wstring(lo);
-        RectF rHi, rLo;
-        g.MeasureString(shi.c_str(), -1, &miniFont, PointF(0, 0), &rHi);
-        g.MeasureString(slo.c_str(), -1, &miniFont, PointF(0, 0), &rLo);
+    if (!simple) {
+         int hi = g_hr5MinHi.load();
+         int lo = g_hr5MinLo.load();
+         Font miniFont(&ff, fontSize * 0.5f, FontStyleBold, UnitPixel);
+         std::wstring shi = std::to_wstring(hi);
+         std::wstring slo = std::to_wstring(lo);
+         RectF rHi, rLo;
+         g.MeasureString(shi.c_str(), -1, &miniFont, PointF(0, 0), &rHi);
+         g.MeasureString(slo.c_str(), -1, &miniFont, PointF(0, 0), &rLo);
 
         PointF hiPos;
         PointF loPos;

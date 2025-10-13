@@ -172,7 +172,9 @@ bool HandleMenuMeasure(LPMEASUREITEMSTRUCT mis) {
 
     if (mis->itemID == ID_POP_EXIT ||
         mis->itemID == ID_POP_TOGGLE_TOP ||
-        mis->itemID == ID_POP_CHANGE_COLOR) {
+        mis->itemID == ID_POP_CHANGE_COLOR ||
+        mis->itemID == ID_POP_MINIMIZE ||
+        mis->itemID == ID_POP_TOGGLE_SIMPLE) {
         mis->itemHeight = 34;
         mis->itemWidth  = 160;
         return true;
@@ -186,6 +188,8 @@ bool HandleMenuDraw(LPDRAWITEMSTRUCT ds) {
 
     std::wstring text;
     if (ds->itemID == ID_POP_CHANGE_COLOR) text = L"变更心跳颜色";
+    else if (ds->itemID == ID_POP_TOGGLE_SIMPLE) text = g_simpleMode.load() ? L"简洁模式(已启用)" : L"简洁模式";
+    else if (ds->itemID == ID_POP_MINIMIZE) text = L"最小化到托盘";
     else if (ds->itemID == ID_POP_EXIT) text = L"退出程序";
     else if (ds->itemID == ID_POP_TOGGLE_TOP) text = g_alwaysOnTop ? L"取消置顶" : L"设为置顶";
     else return false;
@@ -203,6 +207,13 @@ bool HandleMenuCommand(HWND owner, WORD id) {
     case ID_POP_CHANGE_COLOR:
         ShowColorInputDialog(owner);
         return true;
+    case ID_POP_TOGGLE_SIMPLE: {
+        bool cur = g_simpleMode.load();
+        g_simpleMode.store(!cur);
+        AppendLog(std::wstring(L"[UI] 简洁模式 -> ") + (g_simpleMode.load() ? L"ON" : L"OFF"));
+        if (g_mainWnd) PostMessageW(g_mainWnd, WM_APP_REFRESH, 0, 0);
+        return true;
+    }
     case ID_POP_MINIMIZE:
         MinimizeToTray();
         return true;
@@ -239,6 +250,7 @@ static std::vector<MenuItemDef> BuildMenuItems() {
     std::vector<MenuItemDef> v;
     v.push_back({ ID_POP_SET_FILTER,  g_filterAddr.load() ? L"设置过滤地址(已启用)" : L"设置过滤地址" });
     v.push_back({ ID_POP_CHANGE_COLOR, L"变更心跳颜色" });
+    v.push_back({ ID_POP_TOGGLE_SIMPLE, g_simpleMode.load() ? L"简洁模式(已启用)" : L"简洁模式" });
     v.push_back({ ID_POP_MINIMIZE,     L"最小化到托盘" });
     v.push_back({ ID_POP_TOGGLE_TOP,   g_alwaysOnTop ? L"取消置顶" : L"设为置顶" });
     v.push_back({ ID_POP_EXIT,         L"退出程序" });
