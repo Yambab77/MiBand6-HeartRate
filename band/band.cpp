@@ -27,6 +27,7 @@
 #include "band_menu.h"
 #include "hr_upload.h"
 #include "tray.h"
+#include "log.h"
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -64,18 +65,60 @@ std::deque<std::pair<std::chrono::steady_clock::time_point, int>> g_hrHistory;
 std::atomic<int> g_hr5MinHi(60);
 std::atomic<int> g_hr5MinLo(60);
 
-static std::mutex g_logMutex;
-static std::vector<std::string> g_logBuffer;
-static std::atomic<bool> g_logRunning{ false };
-static bool g_consoleEnabled = false;
-static std::chrono::steady_clock::time_point g_startTime = std::chrono::steady_clock::now();
-// 常量 PI（避免 MSVC 下 M_PI 未定义）
-//constexpr double kPi = 3.1415926535897932384626433832795;
-constexpr double kPi = 3.14;
-
+// 在全局变量区（g_hr5MinLo 之后合适的位置）增加拖动状态变量
 POINT g_ptWndStart{};
 POINT g_ptCursorStart{};
 bool  g_bDragging = false;
+
+static void DebugPrint(const std::wstring& s) {
+    OutputDebugStringW((s + L"\n").c_str());
+}
+static std::wstring GetTimestampW() {
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto t = system_clock::to_time_t(now);
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+    struct tm tmv {};
+    localtime_s(&tmv, &t);
+    wchar_t buf[64];
+    swprintf(buf, 64, L"%04d-%02d-%02d %02d:%02d:%02d.%03d",
+        tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+        tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)ms.count());
+    return buf;
+}
+static std::string Narrow(const std::wstring& ws) {
+    if (ws.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), out.data(), len, nullptr, nullptr);
+    return out;
+}
+static std::wstring FormatBtAddr(uint64_t a) {
+    std::wstringstream ss;
+    ss << std::hex << std::setfill(L'0')
+        << std::setw(2) << ((a >> 40) & 0xFF) << L":"
+        << std::setw(2) << ((a >> 32) & 0xFF) << L":"
+        << std::setw(2) << ((a >> 24) & 0xFF) << L":"
+        << std::setw(2) << ((a >> 16) & 0xFF) << L":"
+        << std::setw(2) << ((a >> 8) & 0xFF) << L":"
+        << std::setw(2) << (a & 0xFF);
+    return ss.str();
+}
+static std::wstring Hex(const std::vector<uint8_t>& v) {
+    std::wstringstream ss; ss << std::hex << std::setfill(L'0');
+    for (size_t i = 0; i < v.size(); ++i) {
+        ss << std::setw(2) << (int)v[i];
+        if (i + 1 < v.size()) ss << L' ';
+    }
+    return ss.str();
+}
+std::wstring GetExeDir() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring p(path);
+    size_t pos = p.find_last_of(L"\\/");
+    return pos == std::wstring::npos ? L"." : p.substr(0, pos);
+}
 
 // 广播过滤配置
 static constexpr uint16_t kHuamiCompanyId = 0x0157;
@@ -211,91 +254,6 @@ static void ShowColorInputDialog(HWND owner) {
     }
 }
 
-static void DebugPrint(const std::wstring& s) {
-    OutputDebugStringW((s + L"\n").c_str());
-}
-static std::wstring GetTimestampW() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    auto t = system_clock::to_time_t(now);
-    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-    struct tm tmv {};
-    localtime_s(&tmv, &t);
-    wchar_t buf[64];
-    swprintf(buf, 64, L"%04d-%02d-%02d %02d:%02d:%02d.%03d",
-        tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-        tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)ms.count());
-    return buf;
-}
-static std::string Narrow(const std::wstring& ws) {
-    if (ws.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string out(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), out.data(), len, nullptr, nullptr);
-    return out;
-}
-static std::wstring FormatBtAddr(uint64_t a) {
-    std::wstringstream ss;
-    ss << std::hex << std::setfill(L'0')
-        << std::setw(2) << ((a >> 40) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 32) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 24) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 16) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 8) & 0xFF) << L":"
-        << std::setw(2) << (a & 0xFF);
-    return ss.str();
-}
-static std::wstring Hex(const std::vector<uint8_t>& v) {
-    std::wstringstream ss; ss << std::hex << std::setfill(L'0');
-    for (size_t i = 0; i < v.size(); ++i) {
-        ss << std::setw(2) << (int)v[i];
-        if (i + 1 < v.size()) ss << L' ';
-    }
-    return ss.str();
-}
-void AppendLog(const std::wstring& wline) {
-    std::wstring line = GetTimestampW() + L" | " + wline;
-    if (g_consoleEnabled) {
-        wprintf(L"%s\n", line.c_str());
-    } else {
-        // 可选：同时输出到调试器 (DebugView / VS Output)
-        OutputDebugStringW((line + L"\n").c_str());
-    }
-    std::lock_guard<std::mutex> lk(g_logMutex);
-    g_logBuffer.emplace_back(Narrow(line));
-}
-std::wstring GetExeDir() {
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring p(path);
-    size_t pos = p.find_last_of(L"\\/");
-    return pos == std::wstring::npos ? L"." : p.substr(0, pos);
-}
-static void FlushLogToFile() {
-    std::vector<std::string> swap;
-    {
-        std::lock_guard<std::mutex> lk(g_logMutex);
-        if (g_logBuffer.empty()) return;
-        swap.swap(g_logBuffer);
-    }
-    try {
-        std::ofstream ofs(Narrow(GetExeDir() + L"\\heart_rate_log.txt"),
-            std::ios::app | std::ios::binary);
-        if (!ofs) return;
-        for (auto& l : swap) ofs << l << "\n";
-    }
-    catch (...) {}
-}
-
-static void StartLogFlushThread() {
-    if (g_logRunning.exchange(true)) return;
-    std::thread([] {
-        while (g_logRunning.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(10));
-            FlushLogToFile();
-        }
-    }).detach();
-}
 
 // 广播监听（仅广播模式）
 void StartFilteredBroadcastWatcher() {
@@ -640,8 +598,9 @@ void UpdateOverlay(HWND hWnd) {
 }
 
 void InitConsole() {
- #if ENABLE_CONSOLE
-    if (!g_consoleEnabled) {
+#if ENABLE_CONSOLE
+    static bool s_consoleOpened = false;
+    if (!s_consoleOpened) {
         if (AllocConsole()) {
             SetConsoleTitleW(L"Broadcast HR");
             SetConsoleOutputCP(CP_UTF8);
@@ -650,13 +609,15 @@ void InitConsole() {
             freopen_s(&fp, "CONOUT$", "w", stderr);
             freopen_s(&fp, "CONIN$",  "r", stdin);
             setvbuf(stdout, nullptr, _IONBF, 0);
-            g_consoleEnabled = true;
+            // 控制台输出交给日志模块开关
+            Log_SetConsoleEnabled(true);
+            s_consoleOpened = true;
             wprintf(L"广播心率模式启动...\n");
         }
     }
- #else
-    g_consoleEnabled = false; // 不创建控制台
- #endif
+#else
+    Log_SetConsoleEnabled(false); // 不创建控制台
+#endif
 }
 
 static void ShowLastErrorBox(LPCWSTR title) {
@@ -735,7 +696,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_DESTROY:
         Tray_Shutdown();
-        g_logRunning = false; FlushLogToFile(); PostQuitMessage(0); return 0;
+        Log_Shutdown();
+        PostQuitMessage(0); return 0;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
@@ -810,7 +772,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     // 启动时先随机一次颜色（若用户未锁定）
     RandomizeGlowColorIfAllowed();
     InitConsole();                 // 若 ENABLE_CONSOLE=0 不会创建控制台
-    StartLogFlushThread();
+    Log_Init();
     AppendLog(L"Program started (广播模式)");
 
     ShowWindow(hWnd, SW_SHOW);
@@ -826,8 +788,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         DispatchMessageW(&msg);
     }
  
-    g_logRunning = false;
-    FlushLogToFile();
+    Log_Shutdown();
     if (g_gdiplusToken) {
         GdiplusShutdown(g_gdiplusToken);
         g_gdiplusToken = 0;
