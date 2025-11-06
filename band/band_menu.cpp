@@ -174,7 +174,8 @@ bool HandleMenuMeasure(LPMEASUREITEMSTRUCT mis) {
         mis->itemID == ID_POP_TOGGLE_TOP ||
         mis->itemID == ID_POP_CHANGE_COLOR ||
         mis->itemID == ID_POP_MINIMIZE ||
-        mis->itemID == ID_POP_TOGGLE_SIMPLE) {
+        mis->itemID == ID_POP_TOGGLE_SIMPLE ||
+        mis->itemID == ID_POP_UPLOAD_TOGGLE) {
         mis->itemHeight = 34;
         mis->itemWidth  = 160;
         return true;
@@ -188,6 +189,7 @@ bool HandleMenuDraw(LPDRAWITEMSTRUCT ds) {
 
     std::wstring text;
     if (ds->itemID == ID_POP_CHANGE_COLOR) text = L"变更心跳颜色";
+    else if (ds->itemID == ID_POP_UPLOAD_TOGGLE) text = g_uploadEnabled.load() ? L"停止上传到网站" : L"启用上传到网站";
     else if (ds->itemID == ID_POP_TOGGLE_SIMPLE) text = g_simpleMode.load() ? L"简洁模式(已启用)" : L"简洁模式";
     else if (ds->itemID == ID_POP_MINIMIZE) text = L"最小化到托盘";
     else if (ds->itemID == ID_POP_EXIT) text = L"退出程序";
@@ -207,6 +209,13 @@ bool HandleMenuCommand(HWND owner, WORD id) {
     case ID_POP_CHANGE_COLOR:
         ShowColorInputDialog(owner);
         return true;
+    case ID_POP_UPLOAD_TOGGLE: {
+        bool cur = g_uploadEnabled.load();
+        g_uploadEnabled.store(!cur);
+        AppendLog(std::wstring(L"[UI] 上传到网站 -> ") + (g_uploadEnabled.load() ? L"ON" : L"OFF"));
+        if (g_mainWnd) PostMessageW(g_mainWnd, WM_APP_REFRESH, 0, 0);
+        return true;
+    }
     case ID_POP_TOGGLE_SIMPLE: {
         bool cur = g_simpleMode.load();
         g_simpleMode.store(!cur);
@@ -250,6 +259,7 @@ static std::vector<MenuItemDef> BuildMenuItems() {
     std::vector<MenuItemDef> v;
     v.push_back({ ID_POP_SET_FILTER,  g_filterAddr.load() ? L"设置过滤地址(已启用)" : L"设置过滤地址" });
     v.push_back({ ID_POP_CHANGE_COLOR, L"变更心跳颜色" });
+    v.push_back({ ID_POP_UPLOAD_TOGGLE, g_uploadEnabled.load() ? L"停止上传到网站" : L"启用上传到网站" });
     v.push_back({ ID_POP_TOGGLE_SIMPLE, g_simpleMode.load() ? L"简洁模式(已启用)" : L"简洁模式" });
     v.push_back({ ID_POP_MINIMIZE,     L"最小化到托盘" });
     v.push_back({ ID_POP_TOGGLE_TOP,   g_alwaysOnTop ? L"取消置顶" : L"设为置顶" });

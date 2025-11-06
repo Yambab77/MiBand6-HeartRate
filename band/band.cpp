@@ -26,8 +26,8 @@
 #include "band_filter.h"
 #include "band_menu.h"
 #include "hr_upload.h"
-#include "tray.h"
-#include "log.h"
+#include "log.h"   // 新增：声明 Log_Init/Log_Shutdown/Log_SetConsoleEnabled/AppendLog
+#include "tray.h"  // 新增：声明 Tray_* 和 WM_APP_TRAY
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -49,10 +49,26 @@ using namespace Gdiplus;
 #define ID_POP_CHANGE_COLOR  9003
 bool g_alwaysOnTop = true; // 供 band_menu 使用
 
+// 新增：控制是否上传到网站（由右键菜单切换）
+std::atomic<bool> g_uploadEnabled{ true };
+
 HWND g_mainWnd = nullptr;
 std::atomic<int> g_heartRate(60);
-// 将默认显示方式设为“简洁模式”
-std::atomic<bool> g_simpleMode{ true }; // 新增：简洁模式
+
+// 新增：简洁模式开关（在多个模块引用）
+std::atomic<bool> g_simpleMode{ false };
+
+// 实现：返回可执行文件所在目录（供 band_filter 使用）
+std::wstring GetExeDir() {
+    wchar_t path[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) {
+        return std::wstring(L".");
+    }
+    std::wstring p(path);
+    size_t pos = p.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) return p;
+    return p.substr(0, pos);
+}
 
 static std::unique_ptr<Gdiplus::Image> g_bgImage;
 static int g_winW = 400;
@@ -62,63 +78,21 @@ const UINT WM_APP_REFRESH = WM_APP + 1;
 
 std::mutex g_hrHistMutex;
 std::deque<std::pair<std::chrono::steady_clock::time_point, int>> g_hrHistory;
-std::atomic<int> g_hr5MinHi(60);
-std::atomic<int> g_hr5MinLo(60);
+std::atomic<int> g_hr5MinHi(75);
+std::atomic<int> g_hr5MinLo(75);
 
-// 在全局变量区（g_hr5MinLo 之后合适的位置）增加拖动状态变量
+static std::mutex g_logMutex;
+static std::vector<std::string> g_logBuffer;
+static std::atomic<bool> g_logRunning{ false };
+static bool g_consoleEnabled = false;
+static std::chrono::steady_clock::time_point g_startTime = std::chrono::steady_clock::now();
+// 常量 PI（避免 MSVC 下 M_PI 未定义）
+//constexpr double kPi = 3.1415926535897932384626433832795;
+constexpr double kPi = 3.14;
+
 POINT g_ptWndStart{};
 POINT g_ptCursorStart{};
 bool  g_bDragging = false;
-
-static void DebugPrint(const std::wstring& s) {
-    OutputDebugStringW((s + L"\n").c_str());
-}
-static std::wstring GetTimestampW() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    auto t = system_clock::to_time_t(now);
-    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-    struct tm tmv {};
-    localtime_s(&tmv, &t);
-    wchar_t buf[64];
-    swprintf(buf, 64, L"%04d-%02d-%02d %02d:%02d:%02d.%03d",
-        tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-        tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)ms.count());
-    return buf;
-}
-static std::string Narrow(const std::wstring& ws) {
-    if (ws.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string out(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), out.data(), len, nullptr, nullptr);
-    return out;
-}
-static std::wstring FormatBtAddr(uint64_t a) {
-    std::wstringstream ss;
-    ss << std::hex << std::setfill(L'0')
-        << std::setw(2) << ((a >> 40) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 32) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 24) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 16) & 0xFF) << L":"
-        << std::setw(2) << ((a >> 8) & 0xFF) << L":"
-        << std::setw(2) << (a & 0xFF);
-    return ss.str();
-}
-static std::wstring Hex(const std::vector<uint8_t>& v) {
-    std::wstringstream ss; ss << std::hex << std::setfill(L'0');
-    for (size_t i = 0; i < v.size(); ++i) {
-        ss << std::setw(2) << (int)v[i];
-        if (i + 1 < v.size()) ss << L' ';
-    }
-    return ss.str();
-}
-std::wstring GetExeDir() {
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring p(path);
-    size_t pos = p.find_last_of(L"\\/");
-    return pos == std::wstring::npos ? L"." : p.substr(0, pos);
-}
 
 // 广播过滤配置
 static constexpr uint16_t kHuamiCompanyId = 0x0157;
@@ -254,6 +228,19 @@ static void ShowColorInputDialog(HWND owner) {
     }
 }
 
+// 简短实现：格式化蓝牙地址为 "XX:XX:XX:XX:XX:XX"
+static std::wstring FormatBtAddr(uint64_t a) {
+    std::wstringstream ss;
+    ss << std::hex << std::setfill(L'0')
+       << std::setw(2) << ((a >> 40) & 0xFF) << L":"
+       << std::setw(2) << ((a >> 32) & 0xFF) << L":"
+       << std::setw(2) << ((a >> 24) & 0xFF) << L":"
+       << std::setw(2) << ((a >> 16) & 0xFF) << L":"
+       << std::setw(2) << ((a >> 8) & 0xFF) << L":"
+       << std::setw(2) << (a & 0xFF);
+    // 恢复格式状态（可选）
+    return ss.str();
+}
 
 // 广播监听（仅广播模式）
 void StartFilteredBroadcastWatcher() {
@@ -363,7 +350,9 @@ void StartFilteredBroadcastWatcher() {
         }
 
         g_heartRate = hrCandidate;
-        UploadHeartRateToServer(hrCandidate);
+        if (g_uploadEnabled.load(std::memory_order_relaxed)) {
+            UploadHeartRateToServer(hrCandidate);
+        }
         UpdateHrHistory(hrCandidate);
 
         AppendLog(L"[ADV-HR] addr=" + FormatBtAddr(args.BluetoothAddress()) +

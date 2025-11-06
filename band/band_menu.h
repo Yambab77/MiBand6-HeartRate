@@ -4,9 +4,9 @@
 #endif
 #include <windows.h>
 #include <string>
-#include <atomic> // 新增：声明原子开关
+#include <atomic> // 原文件要求
 
-// 保证这些菜单 ID 与主程序一致（若已定义则不重复）
+// 确保菜单 ID 不会重复定义
 #ifndef ID_POP_EXIT
 #define ID_POP_EXIT          9001
 #endif
@@ -25,8 +25,12 @@
 #ifndef ID_POP_TOGGLE_SIMPLE
 #define ID_POP_TOGGLE_SIMPLE 9006
 #endif
+// 新增：上传开关，使用未被占用的编号
+#ifndef ID_POP_UPLOAD_TOGGLE
+#define ID_POP_UPLOAD_TOGGLE 9007
+#endif
 
-// ----- 外部依赖（在 band.cpp / 其它模块中定义）-----
+// ----- 外部全局（来自 band.cpp / 其它模块） -----
 extern bool  g_alwaysOnTop;
 extern HWND  g_mainWnd;
 extern BYTE  g_glowColorR;
@@ -35,7 +39,8 @@ extern BYTE  g_glowColorB;
 extern bool  g_userColorOverride;
 extern const UINT WM_APP_REFRESH;
 extern std::atomic<int>  g_heartRate;
-extern std::atomic<bool> g_simpleMode; // 新增：简洁模式开关
+extern std::atomic<bool> g_simpleMode; // 简洁模式开关（若有）
+extern std::atomic<bool> g_uploadEnabled; // 新增：是否上传到网站（由右键菜单控制）
 
 void AppendLog(const std::wstring& line);
 
@@ -47,11 +52,11 @@ void ShowContextMenu(HWND owner, POINT screenPt);
 bool HandleMenuMeasure(LPMEASUREITEMSTRUCT mis);
 bool HandleMenuDraw(LPDRAWITEMSTRUCT dis);
 
-// WM_COMMAND 分发（返回 true 表示已处理）
+// WM_COMMAND 回调，返回 true 表示已处理
 bool HandleMenuCommand(HWND owner, WORD id);
 
-// 托盘最小化（由主程序提供）
+// 托盘相关（由 tray 模块实现）
 void MinimizeToTray();
 
-// 自定义无边框菜单（内部使用）
+// 自定义上下文菜单
 void ShowCustomContextMenu(HWND owner, POINT screenPt);
